@@ -158,3 +158,83 @@ def get_snowflake_config() -> Dict[str, str]:
         value = os.getenv(env_key)
         if value:
             config[cfg_key] = value
+
+    if missing:
+        raise RuntimeError("Missing Snowflake env vars: " + ", ".join(missing))
+
+    return config
+
+
+def connect_to_snowflake(config: Dict[str, str]):
+    return snowflake.connector.connect(**config)
+
+
+def ensure_snowflake_table(cursor: snowflake.connector.cursor.SnowflakeCursor, table_name: str) -> None:
+    cursor.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            indicator STRING,
+            ingest_date DATE,
+            id STRING,
+            data VARIANT
+        )
+        """
+    )
+
+
+def write_jsonl_and_snowflake(
+    path: Path,
+    rows: Iterable[Dict[str, Any]],
+    *,
+    table_name: str,
+    indicator: str,
+    ingest_date: str,
+    batch_size: int,
+) -> int:
+    config = get_snowflake_config()
+    conn = connect_to_snowflake(config)
+    try:
+        cursor = conn.cursor()
+        ensure_snowflake_table(cursor, table_name)
+
+        n = 0
+        batch = []
+        with path.open("w", encoding="utf-8") as f:
+            for row in rows:
+                payload = json.dumps(row, ensure_ascii=False)
+                f.write(payload)
+                f.write("\n")
+                batch.append((indicator, ingest_date, row.get("Id"), payload))
+                n += 1
+
+                if len(batch) >= batch_size:
+                    cursor.executemany(
+                        f"INSERT INTO {table_name} (indicator, ingest_date, id, data) "
+                        "SELECT %s, %s, %s, parse_json(%s)",
+                        batch,
+                    )
+                    batch.clear()
+
+        if batch:
+            cursor.executemany(
+                f"INSERT INTO {table_name} (indicator, ingest_date, id, data) "
+                "SELECT %s, %s, %s, parse_json(%s)",
+                batch,
+            )
+
+        conn.commit()
+        return n
+    finally:
+        conn.close()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Ingest WHO GHO API indicator data to raw JSONL.")
+    parser.add_argument("--indicator", required=True, help="Indicator code / endpoint (e.g., MDG_0000000007)")
+    parser.add_argument("--page-size", type=int, default=1000, help="Rows per page ($top). Default 1000.")
+    parser.add_argument("--top", type=int, default=None, help="Max total rows to fetch (for testing).")
+    parser.add_argument(
+        "--select",
+        type=str,
+        default=None,
+        help="OData $select comma-separated (optional). Example: Id,SpatialDim,TimeDim,NumericValue",
