@@ -238,3 +238,63 @@ def main() -> int:
         type=str,
         default=None,
         help="OData $select comma-separated (optional). Example: Id,SpatialDim,TimeDim,NumericValue",
+    )
+    parser.add_argument(
+        "--filter",
+        dest="filters",
+        type=str,
+        default=None,
+        help='OData $filter string (optional). Example: SpatialDimType eq \'COUNTRY\'',
+    )
+    parser.add_argument("--sleep", type=float, default=0.0, help="Seconds to sleep between pages (polite).")
+    parser.add_argument("--timeout", type=int, default=30, help="HTTP timeout seconds. Default 30.")
+    parser.add_argument("--snowflake", action="store_true", help="Also load rows into Snowflake.")
+    parser.add_argument(
+        "--snowflake-table",
+        default=None,
+        help="Snowflake table name (default: who_<indicator>).",
+    )
+    parser.add_argument(
+        "--snowflake-batch-size",
+        type=int,
+        default=1000,
+        help="Snowflake insert batch size. Default 1000.",
+    )
+
+    args = parser.parse_args()
+    load_dotenv()
+
+    if args.snowflake_batch_size <= 0:
+        raise SystemExit("--snowflake-batch-size must be > 0")
+
+    root = project_root_from_this_file()
+    ingest_date = utc_today_str()
+
+    out_dir = root / "data" / "raw" / "who" / args.indicator / f"ingest_date={ingest_date}"
+    ensure_dir(out_dir)
+
+    out_file = out_dir / "part-00000.jsonl"
+
+    meta = {
+        "indicator": args.indicator,
+        "ingest_date": ingest_date,
+        "page_size": args.page_size,
+        "max_rows": args.top,
+        "select": args.select,
+        "filter": args.filters,
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    meta_file = out_dir / "_meta.json"
+    meta_file.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+    headers = {
+        "User-Agent": "KarimJebara-WHO-ETL/1.0 (+local project)",
+        "Accept": "application/json",
+    }
+
+    with requests.Session() as s:
+        s.headers.update(headers)
+        rows_iter = iter_pages(
+            args.indicator,
+            session=s,
+            page_size=args.page_size,
