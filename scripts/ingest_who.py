@@ -298,3 +298,34 @@ def main() -> int:
             args.indicator,
             session=s,
             page_size=args.page_size,
+            max_rows=args.top,
+            select=args.select,
+            filters=args.filters,
+            sleep_s=args.sleep,
+            timeout_s=args.timeout,
+        )
+        if args.snowflake:
+            table_name = args.snowflake_table or f"who_{args.indicator.lower()}"
+            n = write_jsonl_and_snowflake(
+                out_file,
+                rows_iter,
+                table_name=table_name,
+                indicator=args.indicator,
+                ingest_date=ingest_date,
+                batch_size=args.snowflake_batch_size,
+            )
+            print(f"Snowflake load complete: {table_name}")
+        else:
+            n = write_jsonl(out_file, rows_iter)
+
+    print(f"Wrote {n} rows to: {out_file}")
+    print(f"Meta: {meta_file}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        print("\nInterrupted.", file=sys.stderr)
+        raise SystemExit(130)
